@@ -9,8 +9,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from assets.styles import CSS, DEEP_GREEN, LEAF_GREEN
-from data.loader import load_excel
+from assets.styles import CSS, DEEP_GREEN
+from data import load_excel
 
 st.set_page_config(
     page_title="Credit Research Engine",
@@ -114,7 +114,7 @@ with st.sidebar:
     """)
 
 if page == "Market View":
-    from pages.market_view import render
+    from pages import render
     render(df)
 elif page == "Sector Matrix":
     from pages.sector_matrix import render
@@ -123,5 +123,5 @@ elif page == "Credit Flow":
     from pages.credit_flow import render
     render(df)
 elif page == "Report Builder":
-    from pages.report_builder import render
+    from pages import render
     render(df)
