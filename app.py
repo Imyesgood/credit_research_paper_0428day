@@ -114,7 +114,7 @@ with st.sidebar:
     """)
 
 if page == "Market View":
-    from pages import render
+    from pages.market_view import render
     render(df)
 elif page == "Sector Matrix":
     from pages.sector_matrix import render
@@ -123,5 +123,5 @@ elif page == "Credit Flow":
     from pages.credit_flow import render
     render(df)
 elif page == "Report Builder":
-    from pages import render
+    from pages.report_builder import render
     render(df)
