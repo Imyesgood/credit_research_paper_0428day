@@ -32,6 +32,9 @@ PLOTLY_TEMPLATE = 'plotly_white'
 
 CSS = """
 <style>
+/* ── Streamlit 자동 생성 사이드바 페이지 네비게이션 숨김 ── */
+[data-testid="stSidebarNav"] { display: none !important; }
+
 html, body, [class*="css"] {
     font-family: 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
     color: #212121;

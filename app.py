@@ -48,12 +48,13 @@ with st.sidebar:
     st.markdown("### 메뉴")
     page = st.radio(
         "페이지",
-        options=["Market View", "Sector Matrix", "Credit Flow", "Report Builder"],
+        options=["Market View", "Sector Matrix", "Credit Flow",
+                 "Signal Dashboard", "Report Builder"],
         label_visibility='collapsed',
     )
 
     st.divider()
-    st.caption("v0.1 | Expandable Engine")
+    st.caption("v0.2 | Expandable Engine")
 
 if uploaded is None:
     st.html(f"""
@@ -65,28 +66,21 @@ if uploaded is None:
     </div>
     """)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.html(f"""
-        <div style="border:1px solid #D8E4D0; border-radius:8px; padding:20px; background:#F5F7F2">
-            <div style="font-weight:700; color:{DEEP_GREEN}; margin-bottom:8px; font-size:15px">Market View</div>
-            <div style="font-size:13px; color:#555">금리 시계열, 스프레드, 커브, MoM 변화 시각화</div>
-        </div>
-        """)
-    with c2:
-        st.html(f"""
-        <div style="border:1px solid #D8E4D0; border-radius:8px; padding:20px; background:#F5F7F2">
-            <div style="font-weight:700; color:{DEEP_GREEN}; margin-bottom:8px; font-size:15px">Sector Matrix</div>
-            <div style="font-size:13px; color:#555">섹터 x 등급 x 만기 히트맵 + 자동 OW/NW/UW 스코어링</div>
-        </div>
-        """)
-    with c3:
-        st.html(f"""
-        <div style="border:1px solid #D8E4D0; border-radius:8px; padding:20px; background:#F5F7F2">
-            <div style="font-weight:700; color:{DEEP_GREEN}; margin-bottom:8px; font-size:15px">Report Builder</div>
-            <div style="font-size:13px; color:#555">자동 코멘트 생성 + 수동 수정 + 텍스트 출력</div>
-        </div>
-        """)
+    c1, c2, c3, c4 = st.columns(4)
+    cards = [
+        ("Market View",      "금리 시계열, 스프레드, 커브, 월간 변화 시각화"),
+        ("Sector Matrix",    "섹터 × 등급 × 만기 히트맵 + 자동 OW/NW/UW"),
+        ("Signal Dashboard", "Duration · Curve · Credit 투자의견 자동 산출"),
+        ("Report Builder",   "자동 코멘트 생성 + 수동 수정 + 텍스트 출력"),
+    ]
+    for col, (title, desc) in zip([c1, c2, c3, c4], cards):
+        with col:
+            st.html(f"""
+            <div style="border:1px solid #D8E4D0; border-radius:8px; padding:20px; background:#F5F7F2">
+                <div style="font-weight:700; color:{DEEP_GREEN}; margin-bottom:8px; font-size:15px">{title}</div>
+                <div style="font-size:13px; color:#555">{desc}</div>
+            </div>
+            """)
 
     st.markdown("---")
     st.markdown("""
@@ -121,6 +115,9 @@ elif page == "Sector Matrix":
     render(df)
 elif page == "Credit Flow":
     from pages.credit_flow import render
+    render(df)
+elif page == "Signal Dashboard":
+    from pages.signal_dashboard import render
     render(df)
 elif page == "Report Builder":
     from pages.report_builder import render
