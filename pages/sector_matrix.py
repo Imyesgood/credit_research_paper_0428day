@@ -1,19 +1,35 @@
-"""Page 2: Sector Matrix — drag & drop 순서 변경"""
+"""Page 2: Sector Matrix — 순서 변경 (외부 라이브러리 불필요)"""
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+import datetime
 from data.loader import TENOR_LABELS
 from scoring.engine import compute_score
 from assets.styles import (DEEP_GREEN, HEATMAP_GREEN, HEATMAP_DIVERG, PLOTLY_TEMPLATE)
 
-try:
-    from streamlit_sortables import sort_items
-    HAS_SORTABLES = True
-except ImportError:
-    HAS_SORTABLES = False
-
 ALL_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-']
+
+
+def _date_range_picker(df: pd.DataFrame, key: str, default_days: int = 365):
+    """시작일 / 종료일 직접 입력 (캘린더 피커)"""
+    min_d = df['date'].min().date()
+    max_d = df['date'].max().date()
+    default_start = max(max_d - datetime.timedelta(days=default_days), min_d)
+    c1, c2 = st.columns(2)
+    with c1:
+        start_d = st.date_input("시작일", value=default_start,
+                                min_value=min_d, max_value=max_d,
+                                key=f'{key}_start')
+    with c2:
+        end_d = st.date_input("종료일", value=max_d,
+                              min_value=min_d, max_value=max_d,
+                              key=f'{key}_end')
+    if start_d > end_d:
+        st.warning("시작일이 종료일보다 늦습니다.")
+        start_d, end_d = end_d, start_d
+    return pd.Timestamp(start_d), pd.Timestamp(end_d)
+
 
 
 def _init_state(df):
@@ -31,16 +47,77 @@ def _init_state(df):
         st.session_state['mx_rating_order'] = ALL_RATINGS[:]
 
 
+def _reorder_ui(label: str, items: list, state_key: str, n_cols: int = 4):
+    """
+    ↑/↓ 버튼으로 순서 변경 + 체크박스로 표시/숨김 제어
+    외부 라이브러리 불필요
+    """
+    current = st.session_state[state_key]
+
+    with st.expander(f"{label} 순서 / 표시 설정", expanded=False):
+        st.caption("↑ ↓ 버튼으로 순서 변경 | 체크박스로 표시 여부 결정")
+
+        cols = st.columns([3, 1, 1, 2])
+        cols[0].markdown("**항목**")
+        cols[1].markdown("**위로**")
+        cols[2].markdown("**아래로**")
+        cols[3].markdown("**표시**")
+
+        new_order  = current[:]
+        to_display = list(new_order)   # 표시할 항목 (체크된 것만)
+
+        for i, item in enumerate(new_order):
+            c0, c1, c2, c3 = st.columns([3, 1, 1, 2])
+            c0.write(item)
+
+            # 위로
+            if i > 0 and c1.button("↑", key=f'{state_key}_up_{i}', use_container_width=True):
+                new_order[i - 1], new_order[i] = new_order[i], new_order[i - 1]
+                st.session_state[state_key] = new_order
+                st.rerun()
+
+            # 아래로
+            if i < len(new_order) - 1 and c2.button("↓", key=f'{state_key}_dn_{i}', use_container_width=True):
+                new_order[i], new_order[i + 1] = new_order[i + 1], new_order[i]
+                st.session_state[state_key] = new_order
+                st.rerun()
+
+            # 체크박스
+            shown = c3.checkbox("", value=True, key=f'{state_key}_chk_{item}', label_visibility='collapsed')
+            if not shown and item in to_display:
+                to_display.remove(item)
+
+        st.session_state[state_key] = new_order
+
+    # 체크된 항목만 반환
+    return [x for x in st.session_state[state_key]
+            if st.session_state.get(f'{state_key}_chk_{x}', True)]
+
+
 def render(df: pd.DataFrame):
     st.header("Sector Matrix")
     _init_state(df)
 
-    all_cats = sorted(df['category'].unique().tolist())
+    # ── 분석 기간 선택 ────────────────────────────────────────────
+    st.markdown("**분석 기간**")
+    d_start, d_end = _date_range_picker(df, 'mx')
+    dff = df[(df['date'] >= d_start) & (df['date'] <= d_end)]
+
+    if len(dff) == 0:
+        st.warning("선택한 기간에 데이터가 없습니다.")
+        return
+
+    st.caption(f"조회 기간: {d_start.strftime('%Y-%m-%d')} ~ {d_end.strftime('%Y-%m-%d')} "
+               f"| 최신 기준일: {dff['date'].max().strftime('%Y-%m-%d')}")
+    st.markdown("---")
+
+    all_cats = sorted(dff['category'].unique().tolist())
     default_base = next((c for c in all_cats if '국고채' in c or '공사/공단채 AAA' in c), all_cats[0])
 
     mf1, mf2, mf3 = st.columns([1, 2, 3])
     with mf1:
-        sel_tenor_mx = st.selectbox("기준 만기", TENOR_LABELS, index=TENOR_LABELS.index('3Y'), key='mx_tenor')
+        sel_tenor_mx = st.selectbox("기준 만기", TENOR_LABELS,
+                                    index=TENOR_LABELS.index('3Y'), key='mx_tenor')
     with mf2:
         show_mode = st.radio("표시 값", ['금리(%)', '스프레드(bp)'], horizontal=True, key='mx_mode')
     with mf3:
@@ -48,76 +125,38 @@ def render(df: pd.DataFrame):
                                index=all_cats.index(default_base) if default_base in all_cats else 0,
                                key='mx_base')
 
-    with st.expander("섹터 / 등급 순서 변경 (드래그&드롭)", expanded=False):
-        if HAS_SORTABLES:
-            col_s, col_r = st.columns(2)
-            with col_s:
-                st.caption("섹터 순서 (드래그로 변경)")
-                new_sectors = sort_items(
-                    st.session_state['mx_sector_order'],
-                    direction="vertical",
-                    key='sortable_sectors'
-                )
-                st.session_state['mx_sector_order'] = new_sectors
-
-            with col_r:
-                st.caption("등급 순서 (드래그로 변경)")
-                new_ratings = sort_items(
-                    st.session_state['mx_rating_order'],
-                    direction="vertical",
-                    key='sortable_ratings'
-                )
-                st.session_state['mx_rating_order'] = new_ratings
-
-            st.markdown("---")
-            col_s2, col_r2 = st.columns(2)
-            with col_s2:
-                st.caption("섹터 표시 선택")
-                sectors_in_data = sorted(df['sector'].unique().tolist())
-                active_s = []
-                for sec in st.session_state['mx_sector_order']:
-                    if st.checkbox(sec, value=True, key=f'chk_s_{sec}'):
-                        active_s.append(sec)
-                if active_s != st.session_state['mx_sector_order']:
-                    st.session_state['mx_sector_order'] = active_s
-
-            with col_r2:
-                st.caption("등급 표시 선택")
-                active_r = []
-                for rat in st.session_state['mx_rating_order']:
-                    if st.checkbox(rat, value=True, key=f'chk_r_{rat}'):
-                        active_r.append(rat)
-                if active_r != st.session_state['mx_rating_order']:
-                    st.session_state['mx_rating_order'] = active_r
-        else:
-            st.warning("`pip install streamlit-sortables` 필요")
-
-    sector_order = st.session_state['mx_sector_order']
-    rating_order = st.session_state['mx_rating_order']
+    # ── 순서 설정 UI (↑↓ 버튼 방식) ─────────────────────────────
+    col_s, col_r = st.columns(2)
+    with col_s:
+        sector_order = _reorder_ui("섹터", sorted(dff['sector'].unique().tolist()),
+                                   'mx_sector_order')
+    with col_r:
+        rating_order = _reorder_ui("등급", ALL_RATINGS, 'mx_rating_order')
 
     if not sector_order or not rating_order:
         st.warning("섹터 또는 등급을 하나 이상 선택하세요.")
         return
 
-    # 매트릭스 빌드
-    matrix_data = {}
+    # ── 매트릭스 빌드 (dff 기준) ──────────────────────────────────
+    matrix_data    = {}
     base_yield_cache = None
     if show_mode == '스프레드(bp)':
-        base_s = df[(df['category'] == sp_base) & (df['tenor'] == sel_tenor_mx)]
-        base_yield_cache = base_s.sort_values('date').iloc[-1]['yield'] if len(base_s) > 0 else np.nan
+        base_s = dff[(dff['category'] == sp_base) & (dff['tenor'] == sel_tenor_mx)]
+        base_yield_cache = (base_s.sort_values('date').iloc[-1]['yield']
+                            if len(base_s) > 0 else np.nan)
 
     for cat in all_cats:
-        sub = df[df['category'] == cat]
+        sub = dff[dff['category'] == cat]
         if len(sub) == 0: continue
         sec = sub['sector'].iloc[0]
         rat = sub['rating'].iloc[0]
-        s = df[(df['category'] == cat) & (df['tenor'] == sel_tenor_mx)]
+        s   = dff[(dff['category'] == cat) & (dff['tenor'] == sel_tenor_mx)]
         if len(s) == 0: continue
         last_yield = s.sort_values('date').iloc[-1]['yield']
         if show_mode == '스프레드(bp)':
-            val = round((last_yield - base_yield_cache) * 100, 1) \
-                if base_yield_cache is not None and not np.isnan(base_yield_cache) and not np.isnan(last_yield) \
-                else np.nan
+            val = (round((last_yield - base_yield_cache) * 100, 1)
+                   if base_yield_cache is not None and not np.isnan(base_yield_cache)
+                   and not np.isnan(last_yield) else np.nan)
         else:
             val = round(last_yield, 3) if not np.isnan(last_yield) else np.nan
         matrix_data[(sec, rat)] = val
@@ -137,7 +176,7 @@ def render(df: pd.DataFrame):
         hover_text.append(row_h)
         text_vals.append(row_t)
 
-    cs = HEATMAP_GREEN if show_mode == '금리(%)' else HEATMAP_DIVERG
+    cs  = HEATMAP_GREEN if show_mode == '금리(%)' else HEATMAP_DIVERG
     fig = go.Figure(go.Heatmap(
         z=z_vals, x=rating_order, y=sector_order,
         text=text_vals, texttemplate="%{text}",
@@ -148,7 +187,7 @@ def render(df: pd.DataFrame):
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
         height=max(280, len(sector_order) * 44 + 80),
-        title=dict(text=f"섹터 매트릭스  |  {sel_tenor_mx}  |  {show_mode}",
+        title=dict(text=f"섹터 매트릭스  |  {sel_tenor_mx}  |  {show_mode}  |  기준: {dff['date'].max().strftime('%Y-%m-%d')}",
                    font=dict(color=DEEP_GREEN, size=13), x=0),
         font=dict(family="Apple SD Gothic Neo, Noto Sans KR, sans-serif", size=11),
         margin=dict(l=120, r=30, t=48, b=30),
@@ -179,10 +218,10 @@ def render(df: pd.DataFrame):
         }
         cols = st.columns(min(len(score_cats), 3))
         for i, cc in enumerate(score_cats):
-            s = df[(df['category'] == cc) & (df['tenor'] == sel_tenor_mx)]
+            s = dff[(dff['category'] == cc) & (dff['tenor'] == sel_tenor_mx)]
             if len(s) == 0: continue
-            ys = s.set_index('date')['yield'].sort_index()
-            sc = compute_score(ys)
+            ys  = s.set_index('date')['yield'].sort_index()
+            sc  = compute_score(ys)
             cfg = VIEW_CFG.get(sc['view'], VIEW_CFG['NW'])
             with cols[i % 3]:
                 st.markdown(f"""
@@ -209,7 +248,7 @@ def render(df: pd.DataFrame):
         for cc in hm_cats:
             rz, rt = [], []
             for tn in TENOR_LABELS:
-                s = df[(df['category'] == cc) & (df['tenor'] == tn)]
+                s = dff[(dff['category'] == cc) & (dff['tenor'] == tn)]
                 if len(s) == 0:
                     rz.append(np.nan); rt.append(''); continue
                 if hm_mode == '금리(%)':
@@ -217,7 +256,7 @@ def render(df: pd.DataFrame):
                     rz.append(v); rt.append(f"{v:.3f}%")
                 else:
                     ys2 = s.set_index('date')['yield'].sort_index()
-                    v = (ys2.iloc[-1] - ys2.iloc[-22]) * 100 if len(ys2) >= 22 else np.nan
+                    v   = (ys2.iloc[-1] - ys2.iloc[-22]) * 100 if len(ys2) >= 22 else np.nan
                     rz.append(v); rt.append(f"{v:.1f}bp" if not np.isnan(v) else '')
             hm_z.append(rz); hm_text.append(rt)
 
@@ -231,7 +270,8 @@ def render(df: pd.DataFrame):
         fig_hm.update_layout(
             template=PLOTLY_TEMPLATE,
             height=max(280, len(hm_cats) * 34 + 90),
-            title=dict(text=f"카테고리 x 만기  |  {hm_mode}", font=dict(color=DEEP_GREEN, size=13), x=0),
+            title=dict(text=f"카테고리 x 만기  |  {hm_mode}",
+                       font=dict(color=DEEP_GREEN, size=13), x=0),
             font=dict(family="Apple SD Gothic Neo, Noto Sans KR, sans-serif", size=10),
             margin=dict(l=190, r=30, t=48, b=30),
             xaxis=dict(side='top'),
