@@ -1,12 +1,11 @@
-"""Page 2: Sector Matrix — 드래그&드롭 순서 변경"""
+"""Page 2: Sector Matrix — drag & drop 순서 변경"""
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 from data.loader import TENOR_LABELS
 from scoring.engine import compute_score
-from assets.styles import (DEEP_GREEN, LEAF_GREEN, GRAY, OLIVE,
-                            HEATMAP_GREEN, HEATMAP_DIVERG, PLOTLY_TEMPLATE)
+from assets.styles import (DEEP_GREEN, HEATMAP_GREEN, HEATMAP_DIVERG, PLOTLY_TEMPLATE)
 
 try:
     from streamlit_sortables import sort_items
@@ -17,10 +16,10 @@ except ImportError:
 ALL_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-']
 
 
-def _init_order(df):
+def _init_state(df):
     sectors_in_data = sorted(df['sector'].unique().tolist())
     if 'mx_sector_order' not in st.session_state:
-        st.session_state['mx_sector_order'] = sectors_in_data
+        st.session_state['mx_sector_order'] = sectors_in_data[:]
     else:
         existing = st.session_state['mx_sector_order']
         for s in sectors_in_data:
@@ -32,43 +31,9 @@ def _init_order(df):
         st.session_state['mx_rating_order'] = ALL_RATINGS[:]
 
 
-def _arrow_reorder(state_key, prefix):
-    items = list(st.session_state[state_key])
-    for i, item in enumerate(items):
-        c1, c2, c3 = st.columns([4, 1, 1])
-        c1.text(item)
-        if i > 0 and c2.button("▲", key=f'{prefix}_up_{i}'):
-            items[i], items[i-1] = items[i-1], items[i]
-            st.session_state[state_key] = items
-            st.rerun()
-        if i < len(items)-1 and c3.button("▼", key=f'{prefix}_dn_{i}'):
-            items[i], items[i+1] = items[i+1], items[i]
-            st.session_state[state_key] = items
-            st.rerun()
-
-
-def _order_panel():
-    with st.expander("순서 변경", expanded=False):
-        col_s, col_r = st.columns(2)
-        with col_s:
-            st.caption("섹터 순서")
-            if HAS_SORTABLES:
-                new_s = sort_items(st.session_state['mx_sector_order'], key='sort_sector')
-                st.session_state['mx_sector_order'] = new_s
-            else:
-                _arrow_reorder('mx_sector_order', 'sec')
-        with col_r:
-            st.caption("신용등급 순서")
-            if HAS_SORTABLES:
-                new_r = sort_items(st.session_state['mx_rating_order'], key='sort_rating')
-                st.session_state['mx_rating_order'] = new_r
-            else:
-                _arrow_reorder('mx_rating_order', 'rat')
-
-
 def render(df: pd.DataFrame):
     st.header("Sector Matrix")
-    _init_order(df)
+    _init_state(df)
 
     all_cats = sorted(df['category'].unique().tolist())
     default_base = next((c for c in all_cats if '국고채' in c or '공사/공단채 AAA' in c), all_cats[0])
@@ -83,10 +48,56 @@ def render(df: pd.DataFrame):
                                index=all_cats.index(default_base) if default_base in all_cats else 0,
                                key='mx_base')
 
-    _order_panel()
+    with st.expander("섹터 / 등급 순서 변경 (드래그&드롭)", expanded=False):
+        if HAS_SORTABLES:
+            col_s, col_r = st.columns(2)
+            with col_s:
+                st.caption("섹터 순서 (드래그로 변경)")
+                new_sectors = sort_items(
+                    st.session_state['mx_sector_order'],
+                    direction="vertical",
+                    key='sortable_sectors'
+                )
+                st.session_state['mx_sector_order'] = new_sectors
+
+            with col_r:
+                st.caption("등급 순서 (드래그로 변경)")
+                new_ratings = sort_items(
+                    st.session_state['mx_rating_order'],
+                    direction="vertical",
+                    key='sortable_ratings'
+                )
+                st.session_state['mx_rating_order'] = new_ratings
+
+            st.markdown("---")
+            col_s2, col_r2 = st.columns(2)
+            with col_s2:
+                st.caption("섹터 표시 선택")
+                sectors_in_data = sorted(df['sector'].unique().tolist())
+                active_s = []
+                for sec in st.session_state['mx_sector_order']:
+                    if st.checkbox(sec, value=True, key=f'chk_s_{sec}'):
+                        active_s.append(sec)
+                if active_s != st.session_state['mx_sector_order']:
+                    st.session_state['mx_sector_order'] = active_s
+
+            with col_r2:
+                st.caption("등급 표시 선택")
+                active_r = []
+                for rat in st.session_state['mx_rating_order']:
+                    if st.checkbox(rat, value=True, key=f'chk_r_{rat}'):
+                        active_r.append(rat)
+                if active_r != st.session_state['mx_rating_order']:
+                    st.session_state['mx_rating_order'] = active_r
+        else:
+            st.warning("`pip install streamlit-sortables` 필요")
 
     sector_order = st.session_state['mx_sector_order']
     rating_order = st.session_state['mx_rating_order']
+
+    if not sector_order or not rating_order:
+        st.warning("섹터 또는 등급을 하나 이상 선택하세요.")
+        return
 
     # 매트릭스 빌드
     matrix_data = {}
@@ -127,7 +138,6 @@ def render(df: pd.DataFrame):
         text_vals.append(row_t)
 
     cs = HEATMAP_GREEN if show_mode == '금리(%)' else HEATMAP_DIVERG
-
     fig = go.Figure(go.Heatmap(
         z=z_vals, x=rating_order, y=sector_order,
         text=text_vals, texttemplate="%{text}",
@@ -158,7 +168,6 @@ def render(df: pd.DataFrame):
 
     st.markdown("---")
     st.markdown("#### 투자의견")
-
     score_cats = st.multiselect("분석 계열 선택", all_cats,
         default=[c for c in all_cats if '회사채' in c][:4], key='score_cats')
 
@@ -177,8 +186,7 @@ def render(df: pd.DataFrame):
             cfg = VIEW_CFG.get(sc['view'], VIEW_CFG['NW'])
             with cols[i % 3]:
                 st.markdown(f"""
-<div style="border:1px solid {cfg['border']};border-radius:5px;padding:14px 16px;
-            margin:6px 0;background:{cfg['bg']}">
+<div style="border:1px solid {cfg['border']};border-radius:5px;padding:14px 16px;margin:6px 0;background:{cfg['bg']}">
   <div style="font-size:12px;color:#6B7B6E;font-weight:500;margin-bottom:4px">{cc}</div>
   <div style="font-size:18px;font-weight:700;color:{cfg['fg']};margin-bottom:8px">{cfg['label']}</div>
   <div style="font-size:11px;color:#555;line-height:1.9">
@@ -188,8 +196,7 @@ def render(df: pd.DataFrame):
     변동성&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;({sc['vol_score']:+d})<br>
     <span style="font-weight:600">합계&nbsp;&nbsp;{sc['total_score']:+d}</span>
   </div>
-  <div style="font-size:10px;color:#888;margin-top:8px;padding-top:6px;
-              border-top:1px solid {cfg['border']}">{sc['comment']}</div>
+  <div style="font-size:10px;color:#888;margin-top:8px;padding-top:6px;border-top:1px solid {cfg['border']}">{sc['comment']}</div>
 </div>""", unsafe_allow_html=True)
 
     st.markdown("---")

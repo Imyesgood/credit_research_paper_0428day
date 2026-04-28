@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from assets.styles import CSS, DEEP_GREEN
-from data import load_excel
+from data.loader import load_excel
 
 st.set_page_config(
     page_title="Credit Research Engine",
