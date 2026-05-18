@@ -1,20 +1,34 @@
-"""Page 1: Market View — 날짜 직접 선택 + 차트 수정"""
+"""Page 1: Market View — 기준금리 오버레이 지원"""
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 import datetime
-from data.loader import TENOR_LABELS
+from data.loader import TENOR_LABELS, POLICY_RATE_TENOR, POLICY_RATE_SECTOR, get_policy_rate, get_bond_data
 from assets.styles import DEEP_GREEN, OLIVE, LEAF_GREEN, CORAL, HEATMAP_DIVERG, PLOTLY_TEMPLATE
-
 
 COLORS_LINE  = ['#2D3F38', '#4A5E35', '#9A7085', '#005F73', '#8A3030', '#4E9B5A']
 GREEN_SHADES = ['#2D3F38', '#4A5E35', '#4E9B5A', '#8DC175', '#8DD5C8', '#DDE8C0',
                 '#8DB8A5', '#9A7085', '#8A9E96', '#B0BDB4']
 TENOR_ORDER_MAP = {t: i for i, t in enumerate(TENOR_LABELS)}
+
+# 기준금리 전용 색상 (주황계열 — 채권 금리 녹색계열과 명확히 구분)
+POLICY_COLOR       = '#E65100'      # 진한 주황
+POLICY_FILL_COLOR  = 'rgba(230,81,0,0.08)'
+
 COLOR_POS = '#4A5E35'
-COLOR_NEG  = '#E87070'
+COLOR_NEG = '#E87070'
+
+
+# ── 기준금리 계열 목록 헬퍼 ──────────────────────────────────────
+def _policy_cats(df: pd.DataFrame) -> list[str]:
+    pr = get_policy_rate(df)
+    return sorted(pr['category'].unique().tolist()) if len(pr) > 0 else []
+
+
+def _bond_cats(df: pd.DataFrame) -> list[str]:
+    return sorted(get_bond_data(df)['category'].unique().tolist())
 
 
 def _base_layout(fig, title="", height=420):
@@ -46,7 +60,6 @@ def _base_layout(fig, title="", height=420):
 
 
 def _date_range_picker(df: pd.DataFrame, key: str, default_days: int = 365):
-    """시작일 / 종료일 직접 입력 (캘린더 피커)"""
     min_d = df['date'].min().date()
     max_d = df['date'].max().date()
     default_start = max(max_d - datetime.timedelta(days=default_days), min_d)
@@ -65,12 +78,85 @@ def _date_range_picker(df: pd.DataFrame, key: str, default_days: int = 365):
     return pd.Timestamp(start_d), pd.Timestamp(end_d)
 
 
+# ── 기준금리 미니 배너 ────────────────────────────────────────────
+def _render_policy_rate_banner(df: pd.DataFrame):
+    """페이지 상단에 기준금리 현황을 간결하게 표시"""
+    pr_df = get_policy_rate(df)
+    if len(pr_df) == 0:
+        return
+
+    pr_cats = sorted(pr_df['category'].unique())
+    cols = st.columns(len(pr_cats))
+    for col, cat in zip(cols, pr_cats):
+        s = pr_df[pr_df['category'] == cat].sort_values('date')
+        cur  = s.iloc[-1]['yield']
+        prev = s.iloc[-2]['yield'] if len(s) > 1 else cur
+        chg  = cur - prev
+        country = s.iloc[-1]['rating']
+        date_str = s.iloc[-1]['date'].strftime('%Y-%m-%d')
+
+        chg_html = (
+            f"<span style='color:#C62828'>▲ {chg:+.2f}%</span>" if chg > 0
+            else f"<span style='color:#2E7D32'>▼ {chg:+.2f}%</span>" if chg < 0
+            else "<span style='color:#888'>— 변동없음</span>"
+        )
+        col.markdown(
+            f"""<div style="background:linear-gradient(135deg,#FFF3E0,#FFE0B2);
+                border:1px solid {POLICY_COLOR};border-radius:8px;
+                padding:12px 16px;margin-bottom:4px">
+              <div style="font-size:11px;color:#BF360C;font-weight:600;margin-bottom:2px">
+                🏦 {country} 기준금리
+              </div>
+              <div style="font-size:22px;font-weight:800;color:{POLICY_COLOR}">{cur:.2f}%</div>
+              <div style="font-size:11px;color:#666;margin-top:3px">
+                {chg_html} &nbsp;|&nbsp; {date_str}
+              </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
+# ── 기준금리 트레이스 추가 헬퍼 ──────────────────────────────────
+def _add_policy_rate_trace(fig, pr_df: pd.DataFrame, d_start, d_end,
+                            secondary_y=False, show_fill=False):
+    """
+    기준금리 계열을 주황 step-line으로 fig에 추가.
+    기준금리는 단계적으로 변하므로 line_shape='hv'(step) 사용.
+    """
+    pr_cats = sorted(pr_df['category'].unique())
+    for cat in pr_cats:
+        s = pr_df[(pr_df['category'] == cat) &
+                  (pr_df['date'] >= d_start) &
+                  (pr_df['date'] <= d_end)].sort_values('date')
+        if len(s) == 0:
+            continue
+
+        country = s.iloc[0]['rating']
+        fig.add_trace(
+            go.Scatter(
+                x=s['date'], y=s['yield'],
+                name=f'{country} 기준금리',
+                line=dict(color=POLICY_COLOR, width=2.2, dash='dashdot'),
+                line_shape='hv',          # step — 기준금리 특성에 맞음
+                fill='tozeroy' if show_fill else 'none',
+                fillcolor=POLICY_FILL_COLOR if show_fill else None,
+                hovertemplate=f'{country} 기준금리: %{{y:.2f}}%<extra></extra>',
+            ),
+            secondary_y=secondary_y,
+        )
+
 
 # ── 탭1: 변동 요약표 ──────────────────────────────────────────────
 def _render_summary_table(df: pd.DataFrame):
     st.markdown("#### 채권 금리 및 스프레드 변동 요약")
-    all_cats = sorted(df['category'].unique().tolist())
+
+    bond_df  = get_bond_data(df)
+    all_cats = _bond_cats(df)
     target_tenors = ['6M', '1Y', '2Y', '3Y', '5Y']
+
+    # 기준금리 현황 인라인 표시
+    _render_policy_rate_banner(df)
+    st.markdown("")
 
     cf1, cf2 = st.columns([4, 2])
     with cf1:
@@ -92,17 +178,17 @@ def _render_summary_table(df: pd.DataFrame):
 
     ref_y, ref_y1m = {}, {}
     for tn in target_tenors:
-        s = df[(df['category'] == ref_cat) & (df['tenor'] == tn)].sort_values('date')
+        s = bond_df[(bond_df['category'] == ref_cat) & (bond_df['tenor'] == tn)].sort_values('date')
         ref_y[tn]   = s.iloc[-1]['yield'] if len(s) > 0 else np.nan
         ref_y1m[tn] = s.iloc[-22]['yield'] if len(s) >= 22 else np.nan
 
     rows = []
     for cat in sel_cats:
-        sub = df[df['category'] == cat]
+        sub = bond_df[bond_df['category'] == cat]
         row = {'섹터': sub['sector'].iloc[0] if len(sub) > 0 else '',
                '등급': sub['rating'].iloc[0] if len(sub) > 0 else ''}
         for tn in target_tenors:
-            s   = df[(df['category'] == cat) & (df['tenor'] == tn)].sort_values('date')
+            s   = bond_df[(bond_df['category'] == cat) & (bond_df['tenor'] == tn)].sort_values('date')
             cur = s.iloc[-1]['yield'] if len(s) > 0 else np.nan
             cur1m = s.iloc[-22]['yield'] if len(s) >= 22 else np.nan
             row[f'금리_{tn}'] = round(cur, 2) if not np.isnan(cur) else None
@@ -150,7 +236,9 @@ def _render_summary_table(df: pd.DataFrame):
 # ── 탭2: 스프레드 차트 ────────────────────────────────────────────
 def _render_spread_chart(df: pd.DataFrame):
     st.markdown("#### 크레딧 스프레드")
-    all_cats = sorted(df['category'].unique().tolist())
+    bond_df  = get_bond_data(df)
+    pr_df    = get_policy_rate(df)
+    all_cats = _bond_cats(df)
 
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1:
@@ -166,13 +254,15 @@ def _render_spread_chart(df: pd.DataFrame):
         sel_tenor = st.selectbox("만기", TENOR_LABELS,
                                  index=TENOR_LABELS.index('2Y'), key='sp_tenor')
 
-    o1, o2, o3 = st.columns(3)
-    show_fill  = o1.toggle("스프레드 영역", value=True, key='sp_fill')
-    show_cat_b = o2.toggle("기준선 표시",  value=True, key='sp_show_b')
-    show_avg   = o3.toggle("평균선",      value=True, key='sp_avg')
+    o1, o2, o3, o4 = st.columns(4)
+    show_fill    = o1.toggle("스프레드 영역", value=True, key='sp_fill')
+    show_cat_b   = o2.toggle("기준선 표시",  value=True, key='sp_show_b')
+    show_avg     = o3.toggle("평균선",      value=True, key='sp_avg')
+    show_policy  = o4.toggle("🏦 기준금리", value=len(pr_df) > 0, key='sp_policy',
+                              disabled=len(pr_df) == 0)
 
     d_start, d_end = _date_range_picker(df, 'sp')
-    dff = df[(df['date'] >= d_start) & (df['date'] <= d_end)]
+    dff = bond_df[(bond_df['date'] >= d_start) & (bond_df['date'] <= d_end)]
 
     s_a = dff[(dff['category'] == cat_a) & (dff['tenor'] == sel_tenor)].sort_values('date')
     s_b = dff[(dff['category'] == cat_b) & (dff['tenor'] == sel_tenor)].sort_values('date')
@@ -186,12 +276,8 @@ def _render_spread_chart(df: pd.DataFrame):
         st.warning("공통 날짜 데이터 없음")
         return
 
-    # ── z-order 제어: 금리선(secondary_y)이 fill(primary_y) 위에 오도록
-    #    Plotly는 primary → secondary 순으로 렌더하므로
-    #    fill = primary_y(먼저), 금리선 = secondary_y(나중/위) ────────
     fig = make_subplots(specs=[[{'secondary_y': True}]])
 
-    # 1) 스프레드 fill — primary y (뒤에 렌더)
     if show_fill:
         fig.add_trace(go.Scatter(
             x=merged['date'], y=merged['spread_bp'],
@@ -201,7 +287,6 @@ def _render_spread_chart(df: pd.DataFrame):
             hovertemplate='스프레드: %{y:.1f}bp<extra></extra>'),
             secondary_y=False)
 
-    # 2) 평균선 — primary y
     if show_fill and show_avg:
         avg_sp = merged['spread_bp'].mean()
         fig.add_trace(go.Scatter(
@@ -212,7 +297,6 @@ def _render_spread_chart(df: pd.DataFrame):
             hoverinfo='skip'),
             secondary_y=False)
 
-    # 3) 기준선 — secondary y
     if show_cat_b:
         fig.add_trace(go.Scatter(
             x=s_b['date'], y=s_b['yield'],
@@ -221,7 +305,10 @@ def _render_spread_chart(df: pd.DataFrame):
             hovertemplate='%{y:.3f}%<extra></extra>'),
             secondary_y=True)
 
-    # 4) 주요 금리선 — secondary y (맨 위, 선명하게)
+    # 기준금리 오버레이 — secondary_y에 주황 step-line
+    if show_policy and len(pr_df) > 0:
+        _add_policy_rate_trace(fig, pr_df, d_start, d_end, secondary_y=True)
+
     fig.add_trace(go.Scatter(
         x=s_a['date'], y=s_a['yield'],
         name=f'{cat_a} {sel_tenor}',
@@ -279,12 +366,14 @@ def _render_spread_chart(df: pd.DataFrame):
 # ── 탭3: 커브 & 변동 ──────────────────────────────────────────────
 def _single_curve_mom(df: pd.DataFrame, cat: str,
                       d1: pd.Timestamp, d2: pd.Timestamp):
+    bond_df = get_bond_data(df)
+
     def get_cv(dt: pd.Timestamp):
-        avail = df[df['category'] == cat]['date'].unique()
+        avail = bond_df[bond_df['category'] == cat]['date'].unique()
         if len(avail) == 0:
             return pd.DataFrame(), None
         nd = min(avail, key=lambda x: abs((x - dt).days))
-        return df[(df['category'] == cat) & (df['date'] == nd)].copy(), nd
+        return bond_df[(bond_df['category'] == cat) & (bond_df['date'] == nd)].copy(), nd
 
     cv1, actual_d1 = get_cv(d1)
     cv2, actual_d2 = get_cv(d2)
@@ -304,7 +393,6 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
     ys_bar = [(m1_map[t] - m2_map[t]) * 100 for t in common_t]
     bar_colors = [COLOR_POS if v >= 0 else COLOR_NEG for v in ys_bar]
 
-    # ── 제목: st.markdown으로 차트 위에 표시 (annotation HTML 버그 방지) ──
     d1_str = actual_d1.strftime('%Y-%m-%d')
     d2_str = actual_d2.strftime('%Y-%m-%d')
     st.markdown(
@@ -315,17 +403,14 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
         unsafe_allow_html=True,
     )
 
-    # ── 겹침 방지: max 대비 30% 미만 바는 텍스트 숨김 ──────────────
-    max_abs = max(abs(v) for v in ys_bar) if ys_bar else 1
+    max_abs   = max(abs(v) for v in ys_bar) if ys_bar else 1
     bar_texts = [
         f"{v:+.1f}" if abs(v) >= max_abs * 0.30 else ""
         for v in ys_bar
     ]
 
-    # ── Figure ──────────────────────────────────────────────────
     fig = make_subplots(specs=[[{'secondary_y': True}]])
 
-    # 1) 바 — primary y (먼저, 뒤에)
     fig.add_trace(go.Bar(
         x=common_t, y=ys_bar,
         marker_color=bar_colors,
@@ -340,7 +425,6 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
         hovertemplate='%{x}: %{y:+.2f}bp<extra></extra>',
     ), secondary_y=False)
 
-    # 2) 비교일 라인 — secondary y
     cv2_s = (cv2[cv2['tenor'].isin(TENOR_LABELS)].copy()
              .assign(ord=lambda d: d['tenor'].map(TENOR_ORDER_MAP))
              .sort_values('ord'))
@@ -353,7 +437,6 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
         hovertemplate='%{x}: %{y:.3f}%<extra></extra>',
     ), secondary_y=True)
 
-    # 3) 기준일 라인 — secondary y (맨 위)
     cv1_s = (cv1[cv1['tenor'].isin(TENOR_LABELS)].copy()
              .assign(ord=lambda d: d['tenor'].map(TENOR_ORDER_MAP))
              .sort_values('ord'))
@@ -367,7 +450,6 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
         hovertemplate='%{x}: %{y:.3f}%<extra></extra>',
     ), secondary_y=True)
 
-    # ── y축 범위 계산 ─────────────────────────────────────────
     max_abs_bar = max(abs(v) for v in ys_bar) if ys_bar else 1
     bar_range   = [-max_abs_bar * 1.65, max_abs_bar * 1.65]
 
@@ -376,71 +458,50 @@ def _single_curve_mom(df: pd.DataFrame, cat: str,
     line_range = ([min(all_y) - y_span * 0.3, max(all_y) + y_span * 0.5]
                   if all_y else None)
 
-    # ── 레이아웃 ───────────────────────────────────────────────
     fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        height=420,
-        title=dict(text=''),          # None 금지 — JS에서 "undefined" 렌더됨
+        template=PLOTLY_TEMPLATE, height=420,
+        title=dict(text=''),
         font=dict(family='Apple SD Gothic Neo, Noto Sans KR, sans-serif', size=12),
         legend=dict(
-            orientation='h',
-            yanchor='bottom', y=1.02,
-            xanchor='right',  x=1,
-            font=dict(size=11),
+            orientation='h', yanchor='bottom', y=1.02,
+            xanchor='right',  x=1, font=dict(size=11),
             bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='#E0E0E0',
-            borderwidth=1,
+            bordercolor='#E0E0E0', borderwidth=1,
         ),
         margin=dict(l=70, r=85, t=36, b=44),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        hovermode='x unified',
+        plot_bgcolor='white', paper_bgcolor='white', hovermode='x unified',
         bargap=0.30,
         xaxis=dict(
-            categoryorder='array',
-            categoryarray=TENOR_LABELS,
-            showgrid=False,
-            showline=True, linecolor='#BDBDBD', linewidth=1.5,
+            categoryorder='array', categoryarray=TENOR_LABELS,
+            showgrid=False, showline=True, linecolor='#BDBDBD', linewidth=1.5,
             tickfont=dict(size=12, color='#444'),
         ),
     )
-
     fig.update_yaxes(
-        title_text='변동(bp)',
-        ticksuffix='bp',
-        secondary_y=False,
+        title_text='변동(bp)', ticksuffix='bp', secondary_y=False,
         showgrid=True, gridcolor='#EEEEEE', gridwidth=1,
         zeroline=True, zerolinecolor='#AAAAAA', zerolinewidth=1.5,
-        showline=False,
-        range=bar_range,
-        tickfont=dict(size=11, color='#555'),
-        title_font=dict(size=11, color='#555'),
+        showline=False, range=bar_range,
+        tickfont=dict(size=11, color='#555'), title_font=dict(size=11, color='#555'),
         title_standoff=12,
     )
     fig.update_yaxes(
-        title_text='금리(%)',
-        ticksuffix='%',
-        secondary_y=True,
-        showgrid=False,
-        showline=False,
-        tickformat='.2f',
-        range=line_range,
-        tickfont=dict(size=11, color='#555'),
-        title_font=dict(size=11, color='#555'),
+        title_text='금리(%)', ticksuffix='%', secondary_y=True,
+        showgrid=False, showline=False, tickformat='.2f', range=line_range,
+        tickfont=dict(size=11, color='#555'), title_font=dict(size=11, color='#555'),
         title_standoff=12,
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_curve_mom(df: pd.DataFrame):
     st.markdown("#### 커브 및 금리 변동 비교")
-    all_cats  = sorted(df['category'].unique().tolist())
-    avail     = sorted(df['date'].dropna().unique(), reverse=True)
-    min_d     = pd.Timestamp(avail[-1]).date()
-    max_d     = pd.Timestamp(avail[0]).date()
+    bond_df  = get_bond_data(df)
+    all_cats = _bond_cats(df)
+    avail    = sorted(bond_df['date'].dropna().unique(), reverse=True)
+    min_d    = pd.Timestamp(avail[-1]).date()
+    max_d    = pd.Timestamp(avail[0]).date()
 
-    # ── 날짜 직접 입력 (캘린더 피커) ─────────────────────────
     st.markdown("**비교 날짜 설정** — 영업일이 아닌 날은 가장 가까운 영업일로 자동 조정됩니다.")
     dc1, dc2, dc3 = st.columns([2, 2, 1])
     with dc1:
@@ -480,7 +541,9 @@ def _render_curve_mom(df: pd.DataFrame):
 # ── 탭4: 금리 시계열 ──────────────────────────────────────────────
 def _render_timeseries(df: pd.DataFrame):
     st.markdown("#### 금리 시계열")
-    all_cats = sorted(df['category'].unique().tolist())
+    bond_df  = get_bond_data(df)
+    pr_df    = get_policy_rate(df)
+    all_cats = _bond_cats(df)
 
     fc1, fc2 = st.columns([3, 1])
     with fc1:
@@ -490,25 +553,70 @@ def _render_timeseries(df: pd.DataFrame):
         ts_tenor = st.selectbox("만기", TENOR_LABELS,
                                 index=TENOR_LABELS.index('3Y'), key='ts_tenor')
 
-    d_start, d_end = _date_range_picker(df, 'ts')
-    dff = df[(df['date'] >= d_start) & (df['date'] <= d_end)]
+    # 기준금리 오버레이 옵션
+    show_pr = st.toggle(
+        "🏦 기준금리 오버레이", value=len(pr_df) > 0,
+        key='ts_policy', disabled=len(pr_df) == 0,
+        help="주황 점선으로 기준금리를 우측 y축에 표시합니다.",
+    )
 
-    if not ts_cats:
+    d_start, d_end = _date_range_picker(df, 'ts')
+    dff = bond_df[(bond_df['date'] >= d_start) & (bond_df['date'] <= d_end)]
+
+    if not ts_cats and not show_pr:
         st.info("계열을 선택하세요")
         return
 
-    fig = go.Figure()
+    # 기준금리가 있으면 secondary_y 사용
+    use_secondary = show_pr and len(pr_df) > 0
+    fig = make_subplots(specs=[[{'secondary_y': use_secondary}]]) if use_secondary else go.Figure()
+
     for i, cc in enumerate(ts_cats):
         s = dff[(dff['category'] == cc) & (dff['tenor'] == ts_tenor)]
         if len(s) == 0:
             continue
-        fig.add_trace(go.Scatter(x=s['date'], y=s['yield'],
+        trace = go.Scatter(
+            x=s['date'], y=s['yield'],
             name=f'{cc} ({ts_tenor})',
             line=dict(color=COLORS_LINE[i % len(COLORS_LINE)], width=2),
-            hovertemplate=f'{cc}: %{{y:.3f}}%<extra></extra>'))
+            hovertemplate=f'{cc}: %{{y:.3f}}%<extra></extra>',
+        )
+        if use_secondary:
+            fig.add_trace(trace, secondary_y=False)
+        else:
+            fig.add_trace(trace)
+
+    # 기준금리 오버레이
+    if use_secondary:
+        _add_policy_rate_trace(fig, pr_df, d_start, d_end, secondary_y=True)
+
     _base_layout(fig, f'금리 시계열 | {ts_tenor}', 430)
     fig.update_yaxes(ticksuffix='%')
+    if use_secondary:
+        fig.update_yaxes(
+            title_text='채권 금리(%)', ticksuffix='%', secondary_y=False,
+        )
+        fig.update_yaxes(
+            title_text='기준금리(%)', ticksuffix='%', secondary_y=True,
+            showgrid=False,
+            tickfont=dict(color=POLICY_COLOR),
+            title_font=dict(color=POLICY_COLOR),
+        )
     st.plotly_chart(fig, use_container_width=True)
+
+    # 기준금리 현재값 인포 박스
+    if show_pr and len(pr_df) > 0:
+        pr_latest = pr_df.sort_values('date').groupby('category').last().reset_index()
+        info_parts = [
+            f"<b style='color:{POLICY_COLOR}'>{r['rating']} 기준금리: {r['yield']:.2f}%</b>"
+            for _, r in pr_latest.iterrows()
+        ]
+        st.markdown(
+            f"<div style='background:#FFF3E0;border-left:3px solid {POLICY_COLOR};"
+            f"padding:6px 12px;border-radius:4px;font-size:12px'>"
+            f"🏦 &nbsp;{'&nbsp;|&nbsp;'.join(info_parts)}</div>",
+            unsafe_allow_html=True,
+        )
 
     lv = [{'계열': cc,
             '금리': dff[(dff['category'] == cc) & (dff['tenor'] == ts_tenor)].iloc[-1]['yield']}
@@ -534,7 +642,7 @@ def _render_timeseries(df: pd.DataFrame):
         mt_tenors = st.multiselect("만기", TENOR_LABELS,
                                    default=['1Y', '2Y', '3Y', '5Y'], key='mt_tenors')
     d_s2, d_e2 = _date_range_picker(df, 'mt')
-    dff2 = df[(df['date'] >= d_s2) & (df['date'] <= d_e2)]
+    dff2 = bond_df[(bond_df['date'] >= d_s2) & (bond_df['date'] <= d_e2)]
 
     fig3 = go.Figure()
     for i, tn in enumerate(mt_tenors or ['1Y', '3Y']):
@@ -548,18 +656,162 @@ def _render_timeseries(df: pd.DataFrame):
     st.plotly_chart(fig3, use_container_width=True)
 
 
+# ── 기준금리 전용 탭 ──────────────────────────────────────────────
+def _render_policy_rate_tab(df: pd.DataFrame):
+    """기준금리 전용 탭: 시계열 + 채권금리와 비교"""
+    pr_df = get_policy_rate(df)
+    if len(pr_df) == 0:
+        st.info("업로드된 파일에 기준금리 데이터가 없습니다.\n\n"
+                "헤더 row에 `{국가}:기준금리` 형식의 열이 있어야 합니다.")
+        return
+
+    pr_cats  = sorted(pr_df['category'].unique())
+    bond_df  = get_bond_data(df)
+    all_cats = _bond_cats(df)
+
+    # ── 기준금리별 현황 카드 ─────────────────────────────────────
+    _render_policy_rate_banner(df)
+    st.markdown("---")
+
+    # ── 기준금리 시계열 ──────────────────────────────────────────
+    st.markdown("#### 기준금리 추이")
+    d_start, d_end = _date_range_picker(df, 'pr')
+
+    fig = go.Figure()
+    for cat in pr_cats:
+        s = pr_df[(pr_df['category'] == cat) &
+                  (pr_df['date'] >= d_start) &
+                  (pr_df['date'] <= d_end)].sort_values('date')
+        if len(s) == 0:
+            continue
+        country = s.iloc[0]['rating']
+        fig.add_trace(go.Scatter(
+            x=s['date'], y=s['yield'],
+            name=f'{country} 기준금리',
+            line=dict(color=POLICY_COLOR, width=2.5, dash='dashdot'),
+            line_shape='hv',
+            fill='tozeroy', fillcolor=POLICY_FILL_COLOR,
+            hovertemplate=f'{country} 기준금리: %{{y:.2f}}%<extra></extra>',
+        ))
+    _base_layout(fig, '기준금리 추이', 360)
+    fig.update_yaxes(ticksuffix='%')
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── 기준금리 vs 채권 금리 비교 ───────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 기준금리 vs 채권 금리 비교")
+    bc1, bc2 = st.columns([3, 1])
+    with bc1:
+        cmp_cats = st.multiselect(
+            "비교 채권 계열 (최대 4개)", all_cats,
+            default=[c for c in all_cats if '국고채' in c or '공사/공단채 AAA' in c][:2],
+            max_selections=4, key='pr_cmp_cats',
+        )
+    with bc2:
+        cmp_tenor = st.selectbox("만기", TENOR_LABELS,
+                                 index=TENOR_LABELS.index('3Y'), key='pr_cmp_tenor')
+
+    dff_b = bond_df[(bond_df['date'] >= d_start) & (bond_df['date'] <= d_end)]
+
+    fig2 = make_subplots(specs=[[{'secondary_y': False}]])
+    # 기준금리 (주황)
+    for cat in pr_cats:
+        s = pr_df[(pr_df['date'] >= d_start) & (pr_df['date'] <= d_end) &
+                  (pr_df['category'] == cat)].sort_values('date')
+        if len(s) == 0:
+            continue
+        country = s.iloc[0]['rating']
+        fig2.add_trace(go.Scatter(
+            x=s['date'], y=s['yield'],
+            name=f'{country} 기준금리',
+            line=dict(color=POLICY_COLOR, width=3, dash='dashdot'),
+            line_shape='hv',
+            hovertemplate=f'{country} 기준금리: %{{y:.2f}}%<extra></extra>',
+        ))
+    # 채권 금리 (녹색 계열)
+    for i, cc in enumerate(cmp_cats):
+        s = dff_b[(dff_b['category'] == cc) & (dff_b['tenor'] == cmp_tenor)].sort_values('date')
+        if len(s) == 0:
+            continue
+        fig2.add_trace(go.Scatter(
+            x=s['date'], y=s['yield'],
+            name=f'{cc} {cmp_tenor}',
+            line=dict(color=COLORS_LINE[i % len(COLORS_LINE)], width=2),
+            hovertemplate='%{y:.3f}%<extra></extra>',
+        ))
+
+    _base_layout(fig2, f'기준금리 vs 채권 금리 ({cmp_tenor})', 420)
+    fig2.update_yaxes(ticksuffix='%')
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # ── 기준금리 대비 스프레드 ───────────────────────────────────
+    if pr_cats and cmp_cats:
+        st.markdown("---")
+        st.markdown("#### 채권 금리 — 기준금리 스프레드")
+        pr_ref_cat = pr_cats[0]
+        pr_series = (pr_df[pr_df['category'] == pr_ref_cat]
+                     .set_index('date')['yield'].sort_index())
+
+        fig3 = go.Figure()
+        for i, cc in enumerate(cmp_cats):
+            s = dff_b[(dff_b['category'] == cc) & (dff_b['tenor'] == cmp_tenor)].sort_values('date')
+            if len(s) == 0:
+                continue
+            bond_s = s.set_index('date')['yield']
+            idx    = bond_s.index.intersection(pr_series.index)
+            sp     = ((bond_s - pr_series).reindex(idx) * 100).dropna()
+            if len(sp) == 0:
+                continue
+            fig3.add_trace(go.Scatter(
+                x=sp.index, y=sp.values,
+                name=f'{cc} {cmp_tenor} — 기준금리',
+                line=dict(color=COLORS_LINE[i % len(COLORS_LINE)], width=2),
+                fill='tozeroy' if i == 0 else 'none',
+                fillcolor='rgba(78,155,90,0.10)' if i == 0 else None,
+                hovertemplate='%{y:.1f}bp<extra></extra>',
+            ))
+
+        fig3.add_hline(y=0, line_dash='dash', line_color='#BDBDBD', line_width=1.2)
+        _base_layout(fig3, f'채권—기준금리 스프레드 ({pr_ref_cat} 기준)', 360)
+        fig3.update_yaxes(ticksuffix='bp')
+        st.plotly_chart(fig3, use_container_width=True)
+
+
 # ── 메인 ──────────────────────────────────────────────────────────
 def render(df: pd.DataFrame):
     st.header("Market View")
-    c1, c2, c3 = st.columns(3)
+
+    pr_df    = get_policy_rate(df)
+    bond_df  = get_bond_data(df)
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("데이터 시작", df['date'].min().strftime('%Y-%m-%d'))
     c2.metric("데이터 종료", df['date'].max().strftime('%Y-%m-%d'))
-    c3.metric("계열 수",    f"{df['category'].nunique()}개")
+    c3.metric("채권 계열 수", f"{bond_df['category'].nunique()}개")
+
+    # 기준금리 현재값 메트릭
+    if len(pr_df) > 0:
+        latest_pr = pr_df.sort_values('date').groupby('category').last().reset_index()
+        for _, row in latest_pr.iterrows():
+            c4.metric(f"🏦 {row['rating']} 기준금리", f"{row['yield']:.2f}%")
+    else:
+        c4.metric("기준금리", "데이터 없음")
+
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["금리·스프레드 변동표", "크레딧 스프레드", "커브·변동 비교", "금리 시계열"])
+    # 기준금리 탭은 데이터가 있을 때만 표시
+    if len(pr_df) > 0:
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            ["금리·스프레드 변동표", "크레딧 스프레드", "커브·변동 비교",
+             "금리 시계열", "🏦 기준금리"])
+    else:
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["금리·스프레드 변동표", "크레딧 스프레드", "커브·변동 비교", "금리 시계열"])
+        tab5 = None
+
     with tab1: _render_summary_table(df)
     with tab2: _render_spread_chart(df)
     with tab3: _render_curve_mom(df)
     with tab4: _render_timeseries(df)
+    if tab5:
+        with tab5: _render_policy_rate_tab(df)

@@ -10,6 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from assets.styles import CSS, DEEP_GREEN
+from assets.loader_screen import show_loader
 from data.loader import load_excel
 
 st.set_page_config(
@@ -18,6 +19,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# 로딩 스크린: set_page_config 직후, 나머지 렌더 전에 삽입
+show_loader()
 
 st.markdown(CSS, unsafe_allow_html=True)
 
